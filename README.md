@@ -152,3 +152,4 @@ npm run dev
 
 > [!NOTE]
 > **Demo Check Warning**: Free tiers on Render/Railway and Neon sleep on idle (cold boot ~30-50s). Before presenting or recording a live demo, trigger a warm-up request to `GET /health` to ensure zero-latency responsiveness.
+

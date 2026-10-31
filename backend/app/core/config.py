@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "traceguard_admin_secret"
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", "../.env"),
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
