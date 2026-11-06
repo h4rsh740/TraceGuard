@@ -1,29 +1,38 @@
 #!/usr/bin/env python3
 """Seed script for TraceGuard.
 
-Populates the database with the 3 official demo scenarios:
-1. ORD-1001: Duplicate Charge (2 captures of $100.00)
-2. ORD-1002: 'Item Not Received' Dispute (1 capture of $150.00 + Evidence vault documents + Seeded dispute)
-3. ORD-1003: Refund Mismatch (1 capture of $200.00 + 1 partial refund of $75.00)
+Populates the database with rich demo scenarios and dummy data:
+1. ORD-1001: Duplicate Charge ($100.00 x 2) - Investigated, Draft Action Ready for Approval.
+2. ORD-1002: 'Item Not Received' Dispute ($150.00) [SEEDED] - Evidence Vault & Defense Packet.
+3. ORD-1003: Refund Mismatch ($200.00 vs $75.00) - Open Anomaly (Click to Investigate live in UI).
+4. ORD-1004: Resolved Duplicate ($450.00) - Full lifecycle completed & executed by lead_auditor.
+5. ORD-1005: Clean Transaction ($49.99) - Normal verified event in SHA-256 hash chain.
 """
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
+from backend.app.agent.investigator import InvestigatorAgent
 from backend.app.db.session import SessionLocal
+from backend.app.models.action import Action, ActionStatus, ActionType
 from backend.app.models.evidence import Evidence, EvidenceKind
+from backend.app.models.incident import IncidentStatus
 from backend.app.services.event_store import EventStoreService
 from backend.app.services.incident_builder import run_all_rules
+from backend.app.services.llm_client import LLMClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("seed")
 
 
-def seed_database() -> None:
+async def seed_database_async() -> None:
     db = SessionLocal()
     try:
-        logger.info("Starting TraceGuard database seeding...")
+        logger.info("Starting TraceGuard database seeding with complete dummy dataset...")
         now = datetime.now(UTC)
+        llm = LLMClient()
+        investigator = InvestigatorAgent(llm_client=llm)
 
         # -------------------------------------------------------------------
         # Scenario 1: Duplicate Charge (ORD-1001)
@@ -55,13 +64,17 @@ def seed_database() -> None:
         }
         EventStoreService.store_event(db, cap1)
         EventStoreService.store_event(db, cap2)
-        run_all_rules(db, "ORD-1001")
+        incidents1 = run_all_rules(db, "ORD-1001")
+        if incidents1:
+            inc1 = incidents1[0]
+            # Run autonomous investigation to prepare drafted action
+            logger.info("Auto-investigating ORD-1001 to generate audit trail and draft action...")
+            await investigator.investigate(db, inc1.id)
 
         # -------------------------------------------------------------------
         # Scenario 2: 'Item Not Received' Dispute (ORD-1002) [SEEDED]
         # -------------------------------------------------------------------
         logger.info("Seeding Scenario 2: 'Item Not Received' Dispute (ORD-1002)...")
-        # Evidence documents in Evidence Vault
         ev1 = Evidence.create_with_hash(
             order_ref="ORD-1002",
             kind=EvidenceKind.DELIVERY_PROOF.value,
@@ -109,12 +122,16 @@ def seed_database() -> None:
         }
         EventStoreService.store_event(db, disp_cap)
         EventStoreService.store_event(db, disp_evt)
-        run_all_rules(db, "ORD-1002")
+        incidents2 = run_all_rules(db, "ORD-1002")
+        if incidents2:
+            inc2 = incidents2[0]
+            logger.info("Auto-investigating ORD-1002 to compile dispute evidence packet...")
+            await investigator.investigate(db, inc2.id)
 
         # -------------------------------------------------------------------
-        # Scenario 3: Refund Mismatch (ORD-1003)
+        # Scenario 3: Refund Mismatch (ORD-1003) - Left OPEN for interactive UI demo
         # -------------------------------------------------------------------
-        logger.info("Seeding Scenario 3: Refund Mismatch (ORD-1003)...")
+        logger.info("Seeding Scenario 3: Refund Mismatch (ORD-1003) - Ready for live UI demo...")
         mis_cap = {
             "id": "WH-SEED-ORD1003-CAP",
             "event_type": "PAYMENT.CAPTURE.COMPLETED",
@@ -143,10 +160,91 @@ def seed_database() -> None:
         EventStoreService.store_event(db, mis_ref)
         run_all_rules(db, "ORD-1003")
 
-        logger.info("TraceGuard database seeding completed successfully!")
+        # -------------------------------------------------------------------
+        # Scenario 4: Resolved High-Value Duplicate (ORD-1004) - Fully executed
+        # -------------------------------------------------------------------
+        logger.info("Seeding Scenario 4: Resolved High-Value Duplicate (ORD-1004)...")
+        cap4_1 = {
+            "id": "WH-SEED-ORD1004-CAP1",
+            "event_type": "PAYMENT.CAPTURE.COMPLETED",
+            "create_time": (now - timedelta(days=1, hours=2)).isoformat(),
+            "resource": {
+                "id": "CAP-ORD1004-1",
+                "custom_id": "ORD-1004",
+                "status": "COMPLETED",
+                "amount": {"value": "450.00", "currency_code": "USD"},
+                "create_time": (now - timedelta(days=1, hours=2)).isoformat(),
+            },
+        }
+        cap4_2 = {
+            "id": "WH-SEED-ORD1004-CAP2",
+            "event_type": "PAYMENT.CAPTURE.COMPLETED",
+            "create_time": (now - timedelta(days=1, hours=1)).isoformat(),
+            "resource": {
+                "id": "CAP-ORD1004-2",
+                "custom_id": "ORD-1004",
+                "status": "COMPLETED",
+                "amount": {"value": "450.00", "currency_code": "USD"},
+                "create_time": (now - timedelta(days=1, hours=1)).isoformat(),
+            },
+        }
+        EventStoreService.store_event(db, cap4_1)
+        EventStoreService.store_event(db, cap4_2)
+        incidents4 = run_all_rules(db, "ORD-1004")
+        if incidents4:
+            inc4 = incidents4[0]
+            # Create an already executed and approved Action
+            act4 = Action(
+                incident_id=inc4.id,
+                type=ActionType.REFUND.value,
+                status=ActionStatus.EXECUTED.value,
+                idempotency_key="TG-SEED-EXEC-ORD1004-KEY",
+                payload={"capture_id": "CAP-ORD1004-2", "amount": "450.00", "currency": "USD"},
+                approved_by="lead_auditor",
+                approved_at=now - timedelta(hours=20),
+            )
+            db.add(act4)
+            inc4.status = IncidentStatus.RESOLVED.value
+            db.commit()
+
+        # -------------------------------------------------------------------
+        # Scenario 5: Clean Standard Transaction (ORD-1005) - Verified clean
+        # -------------------------------------------------------------------
+        logger.info("Seeding Scenario 5: Clean Verified Transaction (ORD-1005)...")
+        clean_app = {
+            "id": "WH-SEED-ORD1005-APP",
+            "event_type": "CHECKOUT.ORDER.APPROVED",
+            "create_time": (now - timedelta(minutes=15)).isoformat(),
+            "resource": {
+                "id": "PP-ORD-1005",
+                "custom_id": "ORD-1005",
+                "create_time": (now - timedelta(minutes=15)).isoformat(),
+            },
+        }
+        clean_cap = {
+            "id": "WH-SEED-ORD1005-CAP",
+            "event_type": "PAYMENT.CAPTURE.COMPLETED",
+            "create_time": (now - timedelta(minutes=14)).isoformat(),
+            "resource": {
+                "id": "CAP-ORD1005-1",
+                "custom_id": "ORD-1005",
+                "status": "COMPLETED",
+                "amount": {"value": "49.99", "currency_code": "USD"},
+                "create_time": (now - timedelta(minutes=14)).isoformat(),
+            },
+        }
+        EventStoreService.store_event(db, clean_app)
+        EventStoreService.store_event(db, clean_cap)
+        run_all_rules(db, "ORD-1005")
+
+        logger.info("TraceGuard database seeding with dummy dataset completed successfully!")
     finally:
         db.close()
 
 
+def main():
+    asyncio.run(seed_database_async())
+
+
 if __name__ == "__main__":
-    seed_database()
+    main()
