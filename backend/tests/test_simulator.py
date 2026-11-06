@@ -32,7 +32,7 @@ async def test_simulator_dispute_scenario():
     assert result["scenario"] == "dispute"
     assert result["order_ref"] == "ORD-1002"
     assert result["status"] == "SEEDED"
-    assert result["dispute_id"].startswith("DISP-MOCK-")
+    assert result["dispute_id"].startswith("PP-D-SEEDED-")
 
 
 @pytest.mark.asyncio

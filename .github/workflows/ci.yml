@@ -1,0 +1,85 @@
+name: TraceGuard CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-test:
+    name: Backend Lint, Test & Evaluation
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: traceguard
+          POSTGRES_PASSWORD: traceguard_password
+          POSTGRES_DB: traceguard_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Code Formatting & Lint Check (Ruff)
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Run Test Suite (Pytest)
+        env:
+          DATABASE_URL: postgresql+psycopg://traceguard:traceguard_password@localhost:5432/traceguard_db
+          PAYPAL_CLIENT_ID: mock_client_id
+          PAYPAL_CLIENT_SECRET: mock_client_secret
+          PAYPAL_WEBHOOK_ID: mock_webhook_id
+          ADMIN_PASSWORD: traceguard_admin_secret
+          LLM_API_KEY: mock_key
+        run: |
+          pytest -v
+
+      - name: Run Empirical Evaluation Harness
+        run: |
+          python eval/eval_harness.py
+
+  frontend-build:
+    name: Frontend Lint & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: frontend/package.json
+
+      - name: Install Frontend Dependencies
+        working-directory: ./frontend
+        run: npm install
+
+      - name: Build Next.js Production App
+        working-directory: ./frontend
+        run: npm run build

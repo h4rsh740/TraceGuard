@@ -198,15 +198,74 @@ async def run_duplicate_scenario(
     }
 
 
-async def run_dispute_scenario(order_ref: str, is_mock: bool = False) -> dict[str, Any]:
-    """Scenario 2: 'Item Not Received' dispute."""
+async def run_dispute_scenario(
+    order_ref: str,
+    amount: str = "100.00",
+    currency: str = "USD",
+    is_mock: bool = False,
+    post_webhook: bool = False,
+    webhook_url: str = "http://localhost:8000/webhooks/paypal",
+) -> dict[str, Any]:
+    """Scenario 2: 'Item Not Received' dispute.
+
+    Per Section 6: Check whether PayPal sandbox can create disputes. Because PayPal Sandbox
+    dispute creation is restricted, we use a clearly labeled SEEDED dispute behind the same interface
+    and mark it SEEDED in the UI and README.
+    """
     print_banner(f"Scenario 2: Dispute Simulation ({order_ref})")
-    dispute_id = f"DISP-MOCK-{uuid.uuid4().hex[:8].upper()}"
-    logger.info("Step 1: Order %s delivered with tracking info", order_ref)
+    dispute_id = f"PP-D-SEEDED-{uuid.uuid4().hex[:8].upper()}"
+    capture_id = f"CAP-DISP-{uuid.uuid4().hex[:8].upper()}"
+
     logger.info(
-        "Step 2: Buyer filed dispute: 'Item Not Received' (%s) [STATUS: SEEDED/SANDBOX]", dispute_id
+        "Step 1: Order %s captured for $%s %s (Capture: %s)",
+        order_ref,
+        amount,
+        currency,
+        capture_id,
     )
-    logger.info("Step 3: TraceGuard Evidence Vault queried for delivery proof and signed manifest")
+    logger.info("Step 2: Tracking uploaded: 1Z9999999999999999 (UPS Ground, Signed by Customer)")
+    logger.info(
+        "Step 3: Buyer filed dispute: 'Item Not Received' (%s) [STATUS: SEEDED/SANDBOX]", dispute_id
+    )
+
+    if post_webhook:
+        now_1 = datetime.now(UTC).isoformat()
+        wh_cap = {
+            "id": f"WH-DISP-CAP-{uuid.uuid4().hex[:10].upper()}",
+            "event_type": "PAYMENT.CAPTURE.COMPLETED",
+            "create_time": now_1,
+            "resource": {
+                "id": capture_id,
+                "custom_id": order_ref,
+                "status": "COMPLETED",
+                "amount": {"value": amount, "currency_code": currency},
+                "create_time": now_1,
+            },
+        }
+        await post_to_webhook(wh_cap, webhook_url)
+
+        now_2 = datetime.now(UTC).isoformat()
+        wh_disp = {
+            "id": f"WH-DISP-{uuid.uuid4().hex[:10].upper()}",
+            "event_type": "CUSTOMER.DISPUTE.CREATED",
+            "create_time": now_2,
+            "resource": {
+                "id": dispute_id,
+                "status": "OPEN",
+                "dispute_amount": {"value": amount, "currency_code": currency},
+                "dispute_reason": "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+                "disputed_transactions": [
+                    {
+                        "custom_id": order_ref,
+                        "seller_transaction_id": capture_id,
+                        "create_time": now_1,
+                    }
+                ],
+                "create_time": now_2,
+            },
+        }
+        await post_to_webhook(wh_disp, webhook_url)
+
     print(f"\n[RESULT] Dispute recorded: {dispute_id} for order {order_ref} (Marked as SEEDED)")
     return {
         "scenario": "dispute",
@@ -217,13 +276,25 @@ async def run_dispute_scenario(order_ref: str, is_mock: bool = False) -> dict[st
 
 
 async def run_refund_mismatch_scenario(
-    client: PayPalClient, order_ref: str, amount: str, currency: str, is_mock: bool = False
+    client: PayPalClient,
+    order_ref: str,
+    amount: str,
+    currency: str,
+    is_mock: bool = False,
+    post_webhook: bool = False,
+    webhook_url: str = "http://localhost:8000/webhooks/paypal",
 ) -> dict[str, Any]:
     """Scenario 3: Refund Mismatch."""
     print_banner(f"Scenario 3: Refund Mismatch Simulation ({order_ref})")
     mismatched_amount = "65.00" if amount == "100.00" else "15.00"
+    capture_id = f"CAP-MIS-{uuid.uuid4().hex[:8].upper()}"
+
     logger.info(
-        "Step 1: Original capture completed for $%s %s (order %s)", amount, currency, order_ref
+        "Step 1: Original capture completed for $%s %s (order %s, capture %s)",
+        amount,
+        currency,
+        order_ref,
+        capture_id,
     )
     logger.info(
         "Step 2: Refund executed for $%s %s (Difference: $%s without reason code!)",
@@ -231,6 +302,38 @@ async def run_refund_mismatch_scenario(
         currency,
         float(amount) - float(mismatched_amount),
     )
+
+    if post_webhook:
+        now_1 = datetime.now(UTC).isoformat()
+        wh_cap = {
+            "id": f"WH-MIS-CAP-{uuid.uuid4().hex[:10].upper()}",
+            "event_type": "PAYMENT.CAPTURE.COMPLETED",
+            "create_time": now_1,
+            "resource": {
+                "id": capture_id,
+                "custom_id": order_ref,
+                "status": "COMPLETED",
+                "amount": {"value": amount, "currency_code": currency},
+                "create_time": now_1,
+            },
+        }
+        await post_to_webhook(wh_cap, webhook_url)
+
+        now_2 = datetime.now(UTC).isoformat()
+        wh_ref = {
+            "id": f"WH-MIS-REF-{uuid.uuid4().hex[:10].upper()}",
+            "event_type": "PAYMENT.CAPTURE.REFUNDED",
+            "create_time": now_2,
+            "resource": {
+                "id": f"REF-{capture_id[-8:]}",
+                "custom_id": order_ref,
+                "status": "COMPLETED",
+                "amount": {"value": mismatched_amount, "currency_code": currency},
+                "create_time": now_2,
+            },
+        }
+        await post_to_webhook(wh_ref, webhook_url)
+
     print(
         f"\n[RESULT] Mismatched Refund Anomaly created: Capture ${amount} vs Refund ${mismatched_amount}"
     )
@@ -347,10 +450,23 @@ async def main() -> None:
             webhook_url=args.webhook_url,
         )
     elif args.scenario == "dispute":
-        await run_dispute_scenario(order_ref, is_mock=is_mock)
+        await run_dispute_scenario(
+            order_ref,
+            amount=args.amount,
+            currency=args.currency,
+            is_mock=is_mock,
+            post_webhook=args.post_webhook,
+            webhook_url=args.webhook_url,
+        )
     elif args.scenario == "refund_mismatch":
         await run_refund_mismatch_scenario(
-            client, order_ref, args.amount, args.currency, is_mock=is_mock
+            client,
+            order_ref,
+            args.amount,
+            args.currency,
+            is_mock=is_mock,
+            post_webhook=args.post_webhook,
+            webhook_url=args.webhook_url,
         )
 
 

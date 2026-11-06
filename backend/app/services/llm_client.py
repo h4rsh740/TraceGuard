@@ -334,19 +334,26 @@ class LLMClient:
             first_event_id = event_ids[0]
             second_event_id = event_ids[1] if len(event_ids) > 1 else first_event_id
 
+            if "DIS" in order_ref or "DISP" in tool_data:
+                rec_action = "DISPUTE_EVIDENCE"
+                summary_text = f"Order {order_ref} subject to customer dispute; evidence vault documents available."
+            else:
+                rec_action = "REFUND"
+                summary_text = f"Order {order_ref} experienced a duplicate capture anomaly due to simulated merchant cart timeout."
+
             report = {
-                "summary": f"Order {order_ref} experienced a duplicate capture anomaly due to simulated merchant cart timeout.",
+                "summary": summary_text,
                 "claims": [
                     {
-                        "text": f"Initial capture for order {order_ref} was successfully completed.",
+                        "text": f"Initial transaction for order {order_ref} was recorded.",
                         "event_ids": [first_event_id],
                     },
                     {
-                        "text": f"Second duplicate capture occurred for order {order_ref}.",
+                        "text": f"Secondary event occurred for order {order_ref}.",
                         "event_ids": [second_event_id],
                     },
                 ],
-                "recommended_action": "REFUND",
+                "recommended_action": rec_action,
                 "target_resource_id": target_resource,
                 "confidence": 0.98,
                 "unknowns": [],
