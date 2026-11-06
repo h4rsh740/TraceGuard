@@ -150,3 +150,39 @@ def get_incident(
         "actions": actions_data,
         "agent_runs": agent_runs_data,
     }
+
+
+@router.post("/{incident_id}/investigate", status_code=status.HTTP_200_OK)
+async def run_investigation(
+    incident_id: str,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Trigger the autonomous Investigator Agent on an incident.
+
+    Uses tool calling, checks claims with the pure-code Report Validator,
+    retries on errors, and stores an audit trail in agent_runs.
+    """
+    from backend.app.agent.investigator import InvestigatorAgent
+
+    agent = InvestigatorAgent()
+    try:
+        report, agent_run = await agent.investigate(db, incident_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Investigation failed: {str(e)}",
+        ) from e
+
+    return {
+        "incident_id": incident_id,
+        "agent_run_id": agent_run.id,
+        "validation_status": agent_run.validation_status,
+        "validation_errors": agent_run.validation_errors,
+        "tokens_used": agent_run.tokens_used,
+        "report": report,
+    }
