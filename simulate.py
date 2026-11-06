@@ -18,7 +18,10 @@ import argparse
 import asyncio
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Any
+
+import httpx
 
 from backend.app.core.config import settings
 from backend.app.services.paypal_client import PayPalAPIError, PayPalClient
@@ -33,8 +36,35 @@ def print_banner(title: str) -> None:
     print("=" * 70)
 
 
+async def post_to_webhook(
+    payload: dict[str, Any],
+    webhook_url: str = "http://localhost:8000/webhooks/paypal",
+) -> dict[str, Any] | None:
+    """Send simulated webhook payload directly to the TraceGuard webhook receiver."""
+    headers = {
+        "Content-Type": "application/json",
+        "x-traceguard-test-auth": "valid",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.post(webhook_url, json=payload, headers=headers)
+            logger.info(
+                "Posted webhook %s -> HTTP %d: %s", payload.get("id"), res.status_code, res.text
+            )
+            return res.json()
+    except Exception as e:
+        logger.warning("Could not reach webhook endpoint (%s): %s", webhook_url, e)
+        return None
+
+
 async def run_duplicate_scenario(
-    client: PayPalClient, order_ref: str, amount: str, currency: str, is_mock: bool = False
+    client: PayPalClient,
+    order_ref: str,
+    amount: str,
+    currency: str,
+    is_mock: bool = False,
+    post_webhook: bool = False,
+    webhook_url: str = "http://localhost:8000/webhooks/paypal",
 ) -> dict[str, Any]:
     """Scenario 1: Duplicate Charge.
 
@@ -67,6 +97,40 @@ async def run_duplicate_scenario(
             order_ref,
         )
         logger.info("Step 5: Successfully captured payment 2: %s", capture_2_id)
+
+        if post_webhook:
+            now_1 = datetime.now(UTC).isoformat()
+            wh_1 = {
+                "id": f"WH-SIM-{uuid.uuid4().hex[:12].upper()}",
+                "event_type": "PAYMENT.CAPTURE.COMPLETED",
+                "create_time": now_1,
+                "resource": {
+                    "id": capture_1_id,
+                    "custom_id": order_ref,
+                    "status": "COMPLETED",
+                    "amount": {"value": amount, "currency_code": currency},
+                    "create_time": now_1,
+                },
+            }
+            logger.info("Posting Webhook 1 to TraceGuard receiver: %s", webhook_url)
+            await post_to_webhook(wh_1, webhook_url)
+
+            now_2 = datetime.now(UTC).isoformat()
+            wh_2 = {
+                "id": f"WH-SIM-{uuid.uuid4().hex[:12].upper()}",
+                "event_type": "PAYMENT.CAPTURE.COMPLETED",
+                "create_time": now_2,
+                "resource": {
+                    "id": capture_2_id,
+                    "custom_id": order_ref,
+                    "status": "COMPLETED",
+                    "amount": {"value": amount, "currency_code": currency},
+                    "create_time": now_2,
+                },
+            }
+            logger.info("Posting Webhook 2 to TraceGuard receiver: %s", webhook_url)
+            await post_to_webhook(wh_2, webhook_url)
+
         print("\n[RESULT] Duplicate Payment Anomaly Created Successfully!")
         print(f"  Order Ref:  {order_ref}")
         print(f"  Capture 1:  {capture_1_id} (${amount} {currency})")
@@ -228,6 +292,17 @@ async def main() -> None:
     parser.add_argument(
         "--mock", action="store_true", help="Run in mock/offline mode without PayPal API calls"
     )
+    parser.add_argument(
+        "--post-webhook",
+        action="store_true",
+        help="Post the resulting events to the TraceGuard webhook receiver endpoint",
+    )
+    parser.add_argument(
+        "--webhook-url",
+        type=str,
+        default="http://localhost:8000/webhooks/paypal",
+        help="URL of TraceGuard webhook endpoint (default: http://localhost:8000/webhooks/paypal)",
+    )
 
     args = parser.parse_args()
 
@@ -262,7 +337,15 @@ async def main() -> None:
     client = PayPalClient()
 
     if args.scenario == "duplicate":
-        await run_duplicate_scenario(client, order_ref, args.amount, args.currency, is_mock=is_mock)
+        await run_duplicate_scenario(
+            client,
+            order_ref,
+            args.amount,
+            args.currency,
+            is_mock=is_mock,
+            post_webhook=args.post_webhook,
+            webhook_url=args.webhook_url,
+        )
     elif args.scenario == "dispute":
         await run_dispute_scenario(order_ref, is_mock=is_mock)
     elif args.scenario == "refund_mismatch":

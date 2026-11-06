@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.db.session import get_db
 from backend.app.services.event_store import EventStoreService
+from backend.app.services.incident_builder import run_all_rules
 from backend.app.services.paypal_client import PayPalClient
 
 logger = logging.getLogger("traceguard.webhook")
@@ -62,10 +63,15 @@ async def receive_paypal_webhook(
             "order_ref": event.order_ref,
         }
 
+    # 3. Deterministic Incident Detection
+    incidents = run_all_rules(db, event.order_ref)
+    incident_ids = [inc.id for inc in incidents]
+
     return {
         "status": "recorded",
         "event_id": event.paypal_event_id,
         "event_type": event.event_type,
         "order_ref": event.order_ref,
         "event_hash": event.event_hash,
+        "incidents_triggered": incident_ids,
     }
