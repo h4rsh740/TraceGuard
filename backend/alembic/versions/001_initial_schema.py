@@ -25,6 +25,7 @@ def upgrade() -> None:
     op.create_table(
         "events",
         sa.Column("id", sa.String(length=36), primary_key=True),
+        sa.Column("seq", sa.Integer, autoincrement=True, unique=True, nullable=False),
         sa.Column("paypal_event_id", sa.String(length=128), nullable=False, unique=True),
         sa.Column("event_type", sa.String(length=128), nullable=False),
         sa.Column("order_ref", sa.String(length=128), nullable=False),
@@ -42,6 +43,7 @@ def upgrade() -> None:
         sa.Column("prev_hash", sa.String(length=64), nullable=True),
         sa.Column("event_hash", sa.String(length=64), nullable=False),
     )
+    op.create_index("ix_events_seq", "events", ["seq"])
     op.create_index("ix_events_paypal_event_id", "events", ["paypal_event_id"])
     op.create_index("ix_events_event_type", "events", ["event_type"])
     op.create_index("ix_events_order_ref", "events", ["order_ref"])

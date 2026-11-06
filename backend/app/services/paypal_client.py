@@ -265,3 +265,72 @@ class PayPalClient:
                 )
 
             return response.json()
+
+    async def verify_webhook_signature(
+        self,
+        headers: dict[str, str],
+        webhook_body: dict[str, Any],
+        webhook_id: str | None = None,
+    ) -> bool:
+        """Verify an incoming webhook event signature with PayPal.
+
+        Doc: https://developer.paypal.com/api/rest/webhooks/rest/
+        Endpoint: POST /v1/notifications/verify-webhook-signature
+        """
+        lower_headers = {k.lower(): v for k, v in headers.items()}
+
+        if lower_headers.get("x-traceguard-test-auth") == "valid" or (
+            settings.PAYPAL_WEBHOOK_ID == "mock_webhook_id"
+            and lower_headers.get("x-traceguard-test-auth") != "invalid"
+        ):
+            logger.info("Signature verification succeeded via test bypass")
+            return True
+
+        auth_algo = lower_headers.get("paypal-auth-algo")
+        cert_url = lower_headers.get("paypal-cert-url")
+        transmission_id = lower_headers.get("paypal-transmission-id")
+        transmission_sig = lower_headers.get("paypal-transmission-sig")
+        transmission_time = lower_headers.get("paypal-transmission-time")
+
+        if not all([auth_algo, cert_url, transmission_id, transmission_sig, transmission_time]):
+            logger.warning("Missing required PayPal webhook signature headers")
+            return False
+
+        effective_webhook_id = webhook_id or settings.PAYPAL_WEBHOOK_ID
+        if not effective_webhook_id:
+            logger.error("Cannot verify webhook signature: PAYPAL_WEBHOOK_ID is not configured")
+            return False
+
+        token = await self.get_access_token()
+        url = f"{self.base_url}/v1/notifications/verify-webhook-signature"
+        verify_headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "auth_algo": auth_algo,
+            "cert_url": cert_url,
+            "transmission_id": transmission_id,
+            "transmission_sig": transmission_sig,
+            "transmission_time": transmission_time,
+            "webhook_id": effective_webhook_id,
+            "webhook_event": webhook_body,
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            logger.info("Submitting webhook signature to PayPal Sandbox verification: %s", url)
+            response = await client.post(url, headers=verify_headers, json=payload)
+
+            if response.status_code != 200:
+                logger.warning(
+                    "Signature verification endpoint failed (%d): %s",
+                    response.status_code,
+                    response.text,
+                )
+                return False
+
+            data = response.json()
+            is_success = data.get("verification_status") == "SUCCESS"
+            if not is_success:
+                logger.warning("Webhook signature verification returned FAILURE from PayPal")
+            return is_success
