@@ -238,6 +238,17 @@ class InvestigatorAgent:
         validation_status = "verified" if is_valid else "unverified"
 
         # -------------------------------------------------------------------
+        # Recovery Agent: Draft remediation action if report is verified
+        # -------------------------------------------------------------------
+        if is_valid:
+            try:
+                from backend.app.agent.recovery import RecoveryAgent
+
+                RecoveryAgent.draft_action(db, incident.id, final_report)
+            except Exception as e:
+                logger.warning("Failed to auto-draft remediation action: %s", e)
+
+        # -------------------------------------------------------------------
         # Save Agent Run Audit Log into agent_runs table
         # -------------------------------------------------------------------
         agent_run = AgentRun(

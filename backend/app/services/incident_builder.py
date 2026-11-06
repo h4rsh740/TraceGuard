@@ -175,12 +175,54 @@ def evaluate_r3_dispute(db: Session, order_ref: str) -> Incident | None:
 # ---------------------------------------------------------------------------
 
 
+def check_incident_resolution(db: Session, order_ref: str) -> list[Incident]:
+    """Check if an open or awaiting_approval incident has been resolved by subsequent events (e.g., refund).
+
+    Per Section 5.6: The resulting PayPal refund webhook flows back into the event store and resolves the incident.
+    """
+    events = _get_events_for_order(db, order_ref)
+    captures = [e for e in events if e.event_type in CAPTURE_COMPLETED_TYPES]
+    refunds = [e for e in events if e.event_type in REFUND_EVENT_TYPES]
+
+    resolved_list = []
+    # If 2+ captures existed, but refund(s) now balance the extra capture(s):
+    if len(captures) >= 2 and len(refunds) >= (len(captures) - 1):
+        stmt = select(Incident).where(
+            Incident.order_ref == order_ref,
+            Incident.type == IncidentType.DUPLICATE_PAYMENT,
+            Incident.status.in_(
+                [
+                    IncidentStatus.OPEN,
+                    IncidentStatus.INVESTIGATING,
+                    IncidentStatus.AWAITING_APPROVAL,
+                ]
+            ),
+        )
+        for inc in db.scalars(stmt).all():
+            inc.status = IncidentStatus.RESOLVED.value
+            resolved_list.append(inc)
+            logger.info(
+                "Incident %s resolved by inbound PayPal refund webhook for order %s",
+                inc.id,
+                order_ref,
+            )
+
+        if resolved_list:
+            db.commit()
+
+    return resolved_list
+
+
 def run_all_rules(db: Session, order_ref: str) -> list[Incident]:
-    """Evaluate all three detection rules for an order_ref.
+    """Evaluate all detection and resolution rules for an order_ref.
 
     Called by the webhook receiver after each new event is stored.
-    Returns the list of incidents opened (or already open) in this run.
+    Returns the list of incidents opened or modified.
     """
+    # 1. Check if incoming event resolves any existing open incidents
+    check_incident_resolution(db, order_ref)
+
+    # 2. Check for anomalies requiring new incidents
     opened: list[Incident] = []
 
     inc = evaluate_r1_duplicate_payment(db, order_ref)
