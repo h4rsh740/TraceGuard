@@ -83,3 +83,4 @@ jobs:
       - name: Build Next.js Production App
         working-directory: ./frontend
         run: npm run build
+
