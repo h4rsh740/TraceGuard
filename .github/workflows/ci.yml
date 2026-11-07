@@ -48,11 +48,13 @@ jobs:
 
       - name: Run Test Suite (Pytest)
         env:
-          DATABASE_URL: postgresql+psycopg://traceguard:traceguard_password@localhost:5432/traceguard_db
+          DATABASE_URL: postgresql+psycopg2://traceguard:traceguard_password@localhost:5432/traceguard_db
           PAYPAL_CLIENT_ID: mock_client_id
           PAYPAL_CLIENT_SECRET: mock_client_secret
           PAYPAL_WEBHOOK_ID: mock_webhook_id
           ADMIN_PASSWORD: traceguard_admin_secret
+          LLM_PROVIDER: mock
+          LLM_MODEL: mock-investigator-v1
           LLM_API_KEY: mock_key
         run: |
           pytest -v
