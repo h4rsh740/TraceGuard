@@ -311,8 +311,7 @@ class PayPalClient:
             or settings.PAYPAL_WEBHOOK_ID.startswith("dummy")
         )
         if lower_headers.get("x-traceguard-test-auth") == "valid" or (
-            is_mock_webhook
-            and lower_headers.get("x-traceguard-test-auth") != "invalid"
+            is_mock_webhook and lower_headers.get("x-traceguard-test-auth") != "invalid"
         ):
             logger.info("Signature verification succeeded via test bypass")
             return True
